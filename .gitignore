@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+*.pkl
+*.onnx
+*.pt
+data/temp_crops/
+data/student_photos/
+data/embeddings/
+.env

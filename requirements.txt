@@ -1,0 +1,5 @@
+ultralytics
+torch --index-url https://download.pytorch.org/whl/cu118
+torchvision --index-url https://download.pytorch.org/whl/cu118
+insightface
+onnxruntime-gpu
