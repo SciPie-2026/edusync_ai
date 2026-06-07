@@ -1,6 +1,8 @@
 import cv2
 import numpy as np
 import pickle
+import os
+import json
 from insightface.app import FaceAnalysis
 
 face_app = FaceAnalysis(
@@ -11,63 +13,37 @@ face_app.prepare(ctx_id=0, det_size=(320, 320))
 
 
 def augment_image(img):
-    """
-    Generate multiple augmented versions of one photo.
-    Simulates different lighting, slight angles, contrast.
-    """
-    augments = [img]  # original always included
+    augments = [img]
     h, w = img.shape[:2]
-
-    # slight brightness variations
     for beta in [-30, -15, 15, 30]:
-        bright = cv2.convertScaleAbs(img, alpha=1.0, beta=beta)
-        augments.append(bright)
-
-    # contrast variations
+        augments.append(cv2.convertScaleAbs(img, alpha=1.0, beta=beta))
     for alpha in [0.85, 1.15]:
-        contrast = cv2.convertScaleAbs(img, alpha=alpha, beta=0)
-        augments.append(contrast)
-
-    # horizontal flip (mirror)
+        augments.append(cv2.convertScaleAbs(img, alpha=alpha, beta=0))
     augments.append(cv2.flip(img, 1))
-
-    # slight zoom in (crop center 90%)
-    margin_x = int(w * 0.05)
-    margin_y = int(h * 0.05)
+    margin_x, margin_y = int(w * 0.05), int(h * 0.05)
     cropped = img[margin_y:h-margin_y, margin_x:w-margin_x]
     augments.append(cv2.resize(cropped, (w, h)))
-
-    # slight rotation -5 and +5 degrees
     center = (w // 2, h // 2)
     for angle in [-5, 5]:
         M = cv2.getRotationMatrix2D(center, angle, 1.0)
-        rotated = cv2.warpAffine(img, M, (w, h))
-        augments.append(rotated)
-
-    # gaussian blur (simulates lower quality cam vs sharp ID photo)
+        augments.append(cv2.warpAffine(img, M, (w, h)))
     augments.append(cv2.GaussianBlur(img, (3, 3), 0))
-
     return augments
 
 
-def register_from_photo(student_id, image_path):
+def register_student(student_id, image_path, tenant_id):
     img = cv2.imread(image_path)
     if img is None:
-        print(f"ERROR: Cannot read {image_path}")
-        return False
+        return {"status": "error", "reason": "cannot read image"}
 
-    # verify at least one face in original
     faces = face_app.get(img)
     if not faces:
-        print(f"ERROR: No face detected in {image_path}")
-        return False
-
-    print(f"[OK] Face detected in original photo. Generating augmentations...")
+        return {"status": "error", "reason": "no face detected"}
 
     augments = augment_image(img)
     embeddings = []
 
-    for i, aug in enumerate(augments):
+    for aug in augments:
         faces = face_app.get(aug)
         if not faces:
             continue
@@ -77,24 +53,59 @@ def register_from_photo(student_id, image_path):
         embeddings.append(face.embedding)
 
     if not embeddings:
-        print("ERROR: No valid embeddings from augmentations.")
-        return False
+        return {"status": "error", "reason": "no valid embeddings"}
 
-    # average + normalize
     avg_embedding = np.mean(embeddings, axis=0)
     avg_embedding = avg_embedding / np.linalg.norm(avg_embedding)
 
-    save_path = f"data/embeddings/{student_id}.pkl"
+    os.makedirs(f"data/embeddings/{tenant_id}", exist_ok=True)
+    save_path = f"data/embeddings/{tenant_id}/{student_id}.pkl"
     with open(save_path, "wb") as f:
         pickle.dump({
             "student_id": student_id,
+            "tenant_id": tenant_id,
             "embedding": avg_embedding,
-            "num_augments": len(embeddings),
-            "source": image_path
+            "num_augments": len(embeddings)
         }, f)
 
-    print(f"[OK] Registered {student_id} from {len(embeddings)}/{len(augments)} augmentations.")
-    return True
+    return {"status": "ok", "num_augments": len(embeddings)}
 
 
-register_from_photo("YUG", "data/student_photos/yug.jpg")
+def register_bulk(photos_dir, tenant_id):
+    tenant_dir = os.path.join(photos_dir, tenant_id)
+
+    if not os.path.exists(tenant_dir):
+        print(f"ERROR: folder {tenant_dir} not found")
+        return
+
+    files = [f for f in os.listdir(tenant_dir)
+             if f.lower().endswith((".jpg", ".jpeg", ".png"))]
+
+    print(f"Found {len(files)} photos for tenant {tenant_id}\n")
+    results = []
+
+    for filename in files:
+        student_id = filename.split("_")[0]
+        image_path = os.path.join(tenant_dir, filename)
+
+        print(f"Registering {student_id} ({filename})...", end=" ")
+        result = register_student(student_id, image_path, tenant_id)
+
+        if result["status"] == "ok":
+            print(f"OK — {result['num_augments']} augments")
+        else:
+            print(f"FAILED — {result['reason']}")
+
+        results.append({"student_id": student_id, **result})
+
+    report_path = f"data/embeddings/{tenant_id}/report.json"
+    with open(report_path, "w") as f:
+        json.dump(results, f, indent=2)
+
+    success = sum(1 for r in results if r["status"] == "ok")
+    print(f"\n── Registration complete ──────────────")
+    print(f"Success : {success}/{len(files)}")
+    print(f"Report  : {report_path}")
+
+
+register_bulk("data/student_photos", "TENANT001")
